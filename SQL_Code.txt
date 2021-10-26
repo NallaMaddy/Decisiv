@@ -1,0 +1,108 @@
+—————————————————-
+Data Profiling Observations:
+—————————————————-
+
+1. dim_asset_id presents in estimates, estimate line items-operations, maintenance data, assets
+    * dim_asset_id is matching between estimates and assets
+    * dim_asset_id is not matching between estimate line items-operations and assets
+    * dim_asset_id is not matching between maintenance data and assets
+2. assets has duplicates
+3. estimate_id presents in estimates and estimate line items-operations but not matching
+    * Estimates.estimate_id is matching to source_id in estimate line items-operations
+
+Note: Relationship among given objects is ambiguous.
+
+—————————————————-
+DataProcessingStrategy
+—————————————————-
+
+Table Join Orders:
+
+* estimates -> estimate line items-operations; estimates -> assets
+
+	            select a.vin,
+                               count(el.operation_name) as total_ops_count,
+                               sum(el.total_price) as total_cost
+                       from estimates e
+                                join estimate_line_items_operations el on (e.estimate_id = el.source_id)
+                                join (select distinct dim_asset_id, vin from assets) a  on (e.dim_asset_id = a.dim_asset_id)
+                group by a.vin;
+
+* assets -> estimates; estimates -> estimate line items-operations
+
+	            select a.vin,
+                               count(el.operation_name) as total_ops_count,
+                               sum(el.total_price) as total_cost
+                       from (select distinct dim_asset_id, vin from assets) a
+                                join estimates e on (a.dim_asset_id = e.dim_asset_id)
+                                join estimate_line_items_operations el on (e.estimate_id = el.source_id)
+                group by a.vin;
+
+1. Implementation as a function.
+  —————————————————-
+
+CREARTE OR REPLACE FUNCTION DataProcessingStrategy()
+RETURNS TABLE(vin VARCHAR, total_operations INT, total_cost NUMERIC)
+AS $$
+BEGIN
+      RETURN QUERY
+         WITH a AS (select distinct dim_assset_id, vin from assets)
+                    select a.vin,
+                               count(el.operation_name) as total_ops_count,
+                               sum(el.total_price) as total_cost
+                       from estimates e
+                                join estimate_line_items_operations el on (e.estimate_id = el.source_id)
+                                join a  on (e.dim_asset_id = a.dim_asset_id)
+                group by a.vin;
+END;
+$$ LANGUAGE ‘plpgsql’
+
+ Function Execution:
+———————————
+              select * from DataProcessingStrategy();
+              Or
+              select DataProcessingStrategy();
+
+2. Implementation as a Stored Procedure and inserts the query results (vin, total_ops_count, total_cost) into a target table
+  —————————————————-—————————————————-—————————————————-—————————————
+
+CREARTE OR REPLACE PROCEDURE DataProcessingStrategy()
+AS $$
+BEGIN
+         INSERT INTO vin_summary (vin, total_ops_count, total_cost)
+         WITH a AS (select distinct dim_assset_id, vin from assets)
+                    select a.vin,
+                               count(el.operation_name) as total_ops_count,
+                               sum(el.total_price) as total_cost
+                       from estimates e
+                                join estimate_line_items_operations el on (e.estimate_id = el.source_id)
+                                join a  on (e.dim_asset_id = a.dim_asset_id)
+                group by a.vin;
+END;
+$$ LANGUAGE ‘plpgsql’
+
+ Procedure Execution:  call DataProcessingStrategy();
+———————————
+
+———————————
+Exception Handling
+———————————
+
+We can have following exception handling (also can have custom exceptions) in both function and procedure
+
+	exception
+    when others then
+        GET STACKED DIAGNOSTICS err_context = PG_EXCEPTION_CONTEXT;
+        RAISE INFO 'Error Name:%',SQLERRM;
+        RAISE INFO 'Error State:%', SQLSTATE;
+        RAISE INFO 'Error Context:%', err_context;
+        return -1;
+
+—————————————————-
+Unit Test Cases:
+—————————————————-
+
+1. Make sure that the DataProcessingStrategy function/procedure executes without any errors
+2. Mock-up the test data and make sure that the DataProcessingStrategy function/procedure returns the expected results
+3. Empty the tables and make sure that the DataProcessingStrategy function/procedure returns empty results
+4. Fail the function by inserting alphanumeric data into total_cost of ‘estimate line items-operations’ assuming total cost a string operation. Then confirm the  the exception/s that returned from the function/procedure execution
